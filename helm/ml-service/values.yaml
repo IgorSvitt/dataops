@@ -1,0 +1,30 @@
+replicaCount: 2
+
+image:
+  repository: ml-service
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+env:
+  modelVersion: "0.1.0"
+  databaseUrlSecretName: ml-service-secrets
+  databaseUrlSecretKey: database_url
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+ingress:
+  enabled: true
+  className: nginx
+  host: ml-service.local
+  path: /

@@ -1,0 +1,11 @@
+services:
+  jupyterhub:
+    build: .
+    env_file: .env
+    ports:
+      - "8002:8000"
+    volumes:
+      - jupyterhub_data:/srv/jupyterhub
+
+volumes:
+  jupyterhub_data:

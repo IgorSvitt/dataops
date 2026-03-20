@@ -1,0 +1,199 @@
+services:
+  mlflow-postgres:
+    image: postgres:16
+    env_file: ./mlflow/.env
+    volumes:
+      - mlflow_pgdata_clean:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mlflow:
+    build:
+      context: ./mlflow
+    env_file: ./mlflow/.env
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://mlflow:mlflow@mlflow-postgres:5432/mlflow
+    depends_on:
+      mlflow-postgres:
+        condition: service_healthy
+    ports:
+      - "5001:5000"
+    volumes:
+      - mlflow_mlruns:/mlruns
+
+  airflow-postgres:
+    image: postgres:16
+    env_file: ./airflow/.env
+    volumes:
+      - airflow_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  airflow-init:
+    image: apache/airflow:2.10.4
+    env_file: ./airflow/.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    command: >
+      bash -c "airflow db migrate && airflow users create
+      --username $${AIRFLOW_ADMIN_USER}
+      --password $${AIRFLOW_ADMIN_PASSWORD}
+      --firstname Admin --lastname User
+      --role Admin --email admin@example.com || true"
+
+  airflow-webserver:
+    image: apache/airflow:2.10.4
+    env_file: ./airflow/.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      AIRFLOW__WEBSERVER__SECRET_KEY: replace-with-random-secret
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: webserver
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+
+  airflow-scheduler:
+    image: apache/airflow:2.10.4
+    env_file: ./airflow/.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+
+  airflow-triggerer:
+    image: apache/airflow:2.10.4
+    env_file: ./airflow/.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: triggerer
+
+  lakefs-postgres:
+    image: postgres:16
+    env_file: ./lakefs/.env
+    volumes:
+      - lakefs_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    env_file: ./lakefs/.env
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  lakefs:
+    image: treeverse/lakefs:1.78.0
+    env_file: ./lakefs/.env
+    depends_on:
+      lakefs-postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "8001:8000"
+    environment:
+      LAKEFS_DATABASE_TYPE: postgres
+      LAKEFS_DATABASE_POSTGRES_CONNECTION_STRING: postgres://lakefs:lakefs@lakefs-postgres:5432/lakefs?sslmode=disable
+      LAKEFS_AUTH_API_ENDPOINT: http://127.0.0.1:8000
+      LAKEFS_AUTH_API_SKIP_HEALTH_CHECK: "true"
+      LAKEFS_BLOCKSTORE_TYPE: s3
+      LAKEFS_BLOCKSTORE_S3_ENDPOINT: http://minio:9000
+      LAKEFS_BLOCKSTORE_S3_REGION: us-east-1
+      LAKEFS_BLOCKSTORE_S3_CREDENTIALS_ACCESS_KEY_ID: minioadmin
+      LAKEFS_BLOCKSTORE_S3_CREDENTIALS_SECRET_ACCESS_KEY: minioadmin
+      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: some-secret-key-change-me
+      LAKEFS_AUTH_UI_CONFIG_RBAC: "simplified"
+      LAKEFS_LISTEN_ADDRESS: 0.0.0.0:8000
+
+  jupyterhub:
+    build:
+      context: ./jupyterhub
+    env_file: ./jupyterhub/.env
+    ports:
+      - "8002:8000"
+    volumes:
+      - jupyterhub_data:/srv/jupyterhub
+
+  service-db:
+    image: postgres:16
+    env_file: ./ml-service/.env
+    ports:
+      - "5434:5432"
+    volumes:
+      - service_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ml-service:
+    build:
+      context: ./ml-service
+    env_file: ./ml-service/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://service:service@service-db:5432/service
+    depends_on:
+      service-db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - ml-service
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    depends_on:
+      - prometheus
+
+volumes:
+  mlflow_pgdata_clean:
+  mlflow_mlruns:
+  airflow_pgdata:
+  lakefs_pgdata:
+  minio_data:
+  jupyterhub_data:
+  service_pgdata:
