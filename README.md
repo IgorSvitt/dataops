@@ -65,9 +65,3 @@ curl -X POST http://localhost:8000/api/v1/predict \
 ```bash
 curl http://localhost:8000/metrics
 ```
-
-## PromptStorage
-
-Примеры команд для создания нескольких версий промптов в MLflow находятся в файле:
-
-- `mlflow/prompt_storage_examples.md`
